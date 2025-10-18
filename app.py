@@ -408,6 +408,21 @@ def page_rep_kardex_real():
     categoria = categoria or "—"
     sku = sku or "—"
 
+# === EXISTENCIA ACTUAL ===
+with get_conn() as con:
+    existencia = con.execute("""
+        SELECT IFNULL(SUM(
+            CASE tipo
+                WHEN 'ENTRADA' THEN cantidad
+                WHEN 'SALIDA'  THEN -cantidad
+                WHEN 'AJUSTE'  THEN cantidad
+            END
+        ), 0)
+        FROM movimientos
+        WHERE insumo_id=?
+    """, (insumo_id,)).fetchone()[0] or 0
+
+  
     # 2) Rango de fechas
     c3, c4, _ = st.columns([1,1,2])
     d_from = c3.date_input("Desde", value=None)
@@ -442,6 +457,9 @@ def page_rep_kardex_real():
     m2.metric("Salidas", f"{tot_salidas:.2f} {unidad_base}")
     m3.metric("Ajustes", f"{tot_ajustes:.2f} {unidad_base}")
     m4.metric("Saldo final", f"{saldo_final:.2f} {unidad_base}")
+
+  st.metric("Existencia actual", f"{existencia:.2f} {unidad_base}")
+
 
     # 6) Botones de descarga (keys únicos)
     d1, d2, d3 = st.columns(3)

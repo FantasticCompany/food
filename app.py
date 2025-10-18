@@ -1,88 +1,72 @@
 import streamlit as st
+import pandas as pd
+import db
 
-# --- NAV ---
-NAV = {
-    "Insumos": {
-        "Consulta de existencias": "page_stock",
-        "Maestros": {
-            "Unidades": "page_unidades",
-            "Categorías": "page_categorias",
-            "Insumos": "page_insumos",
-        },
-        "Movimientos": {
-            "Entradas": "page_mov_entradas",
-            "Salidas": "page_mov_salidas",
-            "Ajustes": "page_mov_ajustes",
-        },
-        "Reportes": {
-            "Kardex": "page_rep_kardex",
-            "Valorizado": "page_rep_valorizado",
-        }
-    },
-    "Meat Tag": {
-        "Lotes de desposte": "page_meat_lotes",
-        "Rendimientos": "page_meat_rend",
-        "Reporte por lote": "page_meat_rep",
-    },
-    "Receta auxiliar": {
-        "Catálogo": "page_rec_aux",
-        "Componentes": "page_rec_aux_items",
-    },
-    "Receta principal": {
-        "Platos": "page_rec_pri",
-        "Componentes": "page_rec_pri_items",
-        "Costeo": "page_rec_pri_costeo",
-    },
-    "Carta": {
-        "Items facturables": "page_carta_items",
-        "Márgenes": "page_carta_margenes",
-    },
-    "Administración": {
-        "Inicializar base de datos": "page_admin_init",
-        "Cargar datos de ejemplo": "page_admin_seed",
-        "Respaldos": "page_admin_backup",
-    }
-}
+def page_stock():
+    st.title("Consulta de existencias")
 
-def render_menu(nav_map):
-    st.sidebar.header("F&B Control")
-    nivel1 = st.sidebar.selectbox("Módulo", list(nav_map.keys()))
-    submap = nav_map[nivel1]
-    if isinstance(submap, dict):
-        nivel2 = st.sidebar.selectbox("Sección", list(submap.keys()))
-        sub2 = submap[nivel2]
-        if isinstance(sub2, dict):
-            nivel3 = st.sidebar.selectbox("Vista", list(sub2.keys()))
-            return sub2[nivel3], (nivel1, nivel2, nivel3)
-        else:
-            return sub2, (nivel1, nivel2)
-    else:
-        return submap, (nivel1,)
+    # Asegura que la BD y tablas existan
+    try:
+        db.init_db()
+    except Exception:
+        pass
 
-page_key, crumbs = render_menu(NAV)
+    # Cargar lista de insumos
+    with db.get_conn() as con:
+        insumos = [r[0] for r in con.execute(
+            "SELECT nombre FROM insumos WHERE activo=1 ORDER BY nombre"
+        ).fetchall()]
 
-# Router mínimo (conserva tu page_stock existente)
-PAGES = {}
+    if not insumos:
+        st.info("No hay insumos aún. Ve a **Administración → Inicializar base de datos** y (opcional) **Cargar datos de ejemplo**.")
+        return
 
-def page_placeholder(title):
-    st.title(title)
-    st.info("Vista en construcción. Aquí irá la funcionalidad.")
+    prod = st.selectbox("Producto", insumos)
 
-PAGES["page_stock"] = lambda: None  # tu consulta actual
-# Placeholders para que el esqueleto funcione
-for key in [
-    "page_unidades","page_categorias","page_insumos",
-    "page_mov_entradas","page_mov_salidas","page_mov_ajustes",
-    "page_rep_kardex","page_rep_valorizado",
-    "page_meat_lotes","page_meat_rend","page_meat_rep",
-    "page_rec_aux","page_rec_aux_items",
-    "page_rec_pri","page_rec_pri_items","page_rec_pri_costeo",
-    "page_carta_items","page_carta_margenes",
-    "page_admin_init","page_admin_seed","page_admin_backup"
-]:
-    if key not in PAGES:
-        PAGES[key] = (lambda t=key: page_placeholder(t))
+    with db.get_conn() as con:
+        # Ficha básica
+        ficha = con.execute("""
+            SELECT i.id, i.unidad_base, i.categoria, IFNULL(i.sku,'')
+            FROM insumos i
+            WHERE i.nombre=?""", (prod,)).fetchone()
+        insumo_id, unidad_base, categoria, sku = ficha
 
-# Render
-if page_key in PAGES and page_key != "page_stock":
-    PAGES[page_key]()
+        # Existencia = entradas - salidas (ajuste suma signo que corresponda)
+        existencia = con.execute("""
+            SELECT IFNULL(SUM(
+                CASE m.tipo WHEN 'ENTRADA' THEN m.cantidad
+                            WHEN 'SALIDA'  THEN -m.cantidad
+                            WHEN 'AJUSTE'  THEN m.cantidad
+                END
+            ),0)
+            FROM movimientos m
+            WHERE m.insumo_id=?""", (insumo_id,)).fetchone()[0] or 0
+
+        # Precio promedio (de entradas)
+        precio = con.execute("""
+            SELECT ROUND(AVG(costo_unitario),0)
+            FROM movimientos
+            WHERE insumo_id=? AND tipo='ENTRADA' AND costo_unitario IS NOT NULL
+        """, (insumo_id,)).fetchone()[0]
+
+        # Movimientos recientes
+        df = pd.read_sql_query("""
+            SELECT fecha, tipo, cantidad, unidad, costo_unitario, documento, origen_destino
+            FROM movimientos
+            WHERE insumo_id=?
+            ORDER BY fecha DESC, id DESC
+            LIMIT 20
+        """, con, params=(insumo_id,))
+
+    # Render
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cod sistema", f"{insumo_id}")
+    c2.metric("Unidad base", unidad_base)
+    c3.metric("Categoría", categoria)
+    c4.metric("SKU", sku if sku else "—")
+
+    st.metric("Existencia actual", f"{existencia:.2f} {unidad_base}")
+    st.metric("Precio promedio (entradas)", f"{int(precio):,} COP".replace(",", ".")) if precio else st.write("")
+
+    st.subheader("Movimientos recientes")
+    st.dataframe(df, use_container_width=True)

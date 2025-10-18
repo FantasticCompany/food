@@ -217,6 +217,66 @@ def _insert_mov(fecha, tipo, insumo_id, cantidad, unidad, costo_unitario,
               documento or None, origen_destino or None, usuario or None))
         con.commit()
 
+# ==== HELPER: OBTENER MOVS Y SALDO ACUMULADO (KARDEX) ====
+def _kardex_df(insumo_id: int, date_from: str | None, date_to: str | None) -> pd.DataFrame:
+    """
+    Retorna DataFrame con movimientos del insumo y saldo acumulado.
+    date_from/date_to en formato 'YYYY-MM-DD' o None.
+    """
+    base_sql = """
+        SELECT 
+            m.fecha,
+            m.tipo,
+            m.cantidad,
+            m.unidad,
+            m.costo_unitario,
+            IFNULL(m.documento,'') AS documento,
+            IFNULL(m.origen_destino,'') AS origen_destino
+        FROM movimientos m
+        WHERE m.insumo_id=?
+    """
+    params = [insumo_id]
+    if date_from:
+        base_sql += " AND date(m.fecha) >= date(?)"
+        params.append(date_from)
+    if date_to:
+        base_sql += " AND date(m.fecha) <= date(?)"
+        params.append(date_to)
+    base_sql += " ORDER BY date(m.fecha), m.id"
+
+    with get_conn() as con:
+        df = pd.read_sql_query(base_sql, con, params=params)
+
+    if df.empty:
+        return df
+
+    # Cantidad con signo para saldo
+    def _signed(row):
+        if row["tipo"] == "ENTRADA":
+            return row["cantidad"]
+        elif row["tipo"] == "SALIDA":
+            return -row["cantidad"]
+        else:  # AJUSTE
+            return row["cantidad"]
+
+    df["cant_signo"] = df.apply(_signed, axis=1)
+    df["saldo"] = df["cant_signo"].cumsum()
+
+    # Orden y nombres bonitos
+    df = df[["fecha","tipo","cantidad","unidad","costo_unitario","documento","origen_destino","saldo"]]
+    df.rename(columns={
+        "fecha": "Fecha",
+        "tipo": "Tipo",
+        "cantidad": "Cantidad",
+        "unidad": "Unidad",
+        "costo_unitario": "Costo unitario",
+        "documento": "Documento",
+        "origen_destino": "Origen/Destino",
+        "saldo": "Saldo"
+    }, inplace=True)
+    return df
+
+
 # ========== UI: MENÚ ==========
 NAV = {
     "Insumos": {
@@ -324,6 +384,63 @@ def page_stock():
             LIMIT 30
         """, con, params=(insumo_id,))
 
+# ==== REPORTE: KARDEX ====
+def page_rep_kardex():
+    st.title("Reporte · Kardex")
+    init_db()
+
+    # Insumos activos
+    ins_opts = _insumos_opciones()
+    if not ins_opts:
+        st.info("No hay insumos activos. Crea insumos o carga datos de ejemplo.")
+        return
+
+    nombres = [r[1] for r in ins_opts]
+    c1, c2 = st.columns([2,1])
+    nombre = c1.selectbox("Insumo", nombres)
+    unidad_base = [r[2] for r in ins_opts if r[1]==nombre][0]
+
+    c3, c4, c5 = st.columns([1,1,1])
+    d_from = c3.date_input("Desde", value=None)
+    d_to   = c4.date_input("Hasta", value=None)
+    st.caption("Si dejas fechas en blanco, se listan todos los movimientos.")
+
+    insumo_id = _insumo_id_por_nombre(nombre)
+    s_from = d_from.isoformat() if d_from else None
+    s_to   = d_to.isoformat() if d_to else None
+    df = _kardex_df(insumo_id, s_from, s_to)
+
+    if df.empty:
+        st.warning("No hay movimientos en el rango seleccionado.")
+        return
+
+    # Totales del período (por tipo)
+    tot_entradas = df.loc[df["Tipo"]=="ENTRADA","Cantidad"].sum()
+    tot_salidas  = df.loc[df["Tipo"]=="SALIDA","Cantidad"].sum()
+    tot_ajustes  = df.loc[df["Tipo"]=="AJUSTE","Cantidad"].sum()
+    saldo_final  = df["Saldo"].iloc[-1]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Entradas", f"{tot_entradas:.2f} {unidad_base}")
+    m2.metric("Salidas", f"{tot_salidas:.2f} {unidad_base}")
+    m3.metric("Ajustes", f"{tot_ajustes:.2f} {unidad_base}")
+    m4.metric("Saldo final", f"{saldo_final:.2f} {unidad_base}")
+
+    st.subheader("Movimientos")
+    st.dataframe(df, use_container_width=True, height=500)
+
+    # Descargas
+    cdl1, cdl2 = st.columns(2)
+    csv = df.to_csv(index=False).encode("utf-8")
+    cdl1.download_button("⬇️ Descargar CSV", csv, file_name=f"kardex_{nombre}.csv", mime="text/csv")
+
+    from io import BytesIO
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as xlw:
+        df.to_excel(xlw, index=False, sheet_name="Kardex")
+    cdl2.download_button("⬇️ Descargar Excel", bio.getvalue(), file_name=f"kardex_{nombre}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+  
     # UI
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cod sistema", f"{insumo_id}")

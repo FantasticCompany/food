@@ -385,7 +385,7 @@ def page_stock():
         """, con, params=(insumo_id,))
 
 # ==== REPORTE: KARDEX ====
-def page_rep_kardex():
+def page_rep_kardex_real():
     st.title("Reporte · Kardex")
     init_db()
 
@@ -640,7 +640,7 @@ PAGES = {
     "page_unidades": page_unidades,
     "page_categorias": page_categorias,
     "page_insumos": page_insumos,
-    "page_rep_kardex": page_rep_kardex,
+    "page_rep_kardex": page_rep_kardex_real,
     "page_rep_valorizado": page_rep_valorizado,
     # Meat Tag
     "page_meat_lotes": page_meat_lotes,

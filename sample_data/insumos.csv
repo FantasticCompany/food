@@ -1,0 +1,4 @@
+nombre,categoria,unidad_base,stock_min,stock_max,activo,sku
+FRIJOL SABANERO,Granos,kg,5,50,1,GR-001
+RES - BOLA DE PIERNA,Carnes,kg,10,60,1,CR-010
+MANTEQUILLA,Lácteos,kg,2,20,1,LA-020

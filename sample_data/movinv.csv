@@ -1,0 +1,4 @@
+fecha,tipo,insumo_nombre,cantidad,unidad,costo_unitario,documento,origen_destino
+2025-06-05,ENTRADA,FRIJOL SABANERO,25,kg,6500,OC-1001,Proveedor B
+2025-06-10,SALIDA,FRIJOL SABANERO,5,kg,,PRD-0001,Cocina Caliente
+2025-06-08,ENTRADA,RES - BOLA DE PIERNA,40,kg,21500,OC-2001,Carnes XYZ

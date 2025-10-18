@@ -1,2 +1,5 @@
 streamlit
 pandas
+XlsxWriter
+openpyxl
+reportlab   # <-- solo si quieres la descarga en PDF

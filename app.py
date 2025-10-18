@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS carta (
 
 # ========== DB HELPERS ==========
 def get_conn():
-    # check_same_thread=False para permitir múltiples llamadas en Streamlit
+    # check_same_thread=False para múltiples llamadas en Streamlit
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
@@ -160,10 +160,9 @@ def seed_from_csv_folder(folder="sample_data"):
             with f.open(encoding="utf-8") as fd:
                 dr = DictReader(fd)
                 for r in dr:
-                    # Mapear nombre de insumo -> id
                     insumo_id = cur.execute("SELECT id FROM insumos WHERE nombre=?",
                                             (r["insumo"],)).fetchone()
-                    if not insumo_id: 
+                    if not insumo_id:
                         continue
                     insumo_id = insumo_id[0]
                     cur.execute("""
@@ -191,6 +190,31 @@ def seed_minimal_demo():
         cur.execute("""INSERT INTO movimientos(fecha,tipo,insumo_id,cantidad,unidad,costo_unitario,documento,origen_destino,usuario)
                        VALUES(?,?,?,?,?,?,?,?,?)""",
                     (str(date.today()), 'SALIDA', insumo_id, 5, 'kg', None, 'PRD-0001', 'Cocina Caliente', 'None'))
+        con.commit()
+
+# ==== HELPERS DE MOVIMIENTOS ====
+def _insumos_opciones():
+    with get_conn() as con:
+        rows = con.execute("""
+            SELECT id, nombre, unidad_base, categoria, IFNULL(sku,'')
+            FROM insumos WHERE activo=1 ORDER BY nombre
+        """).fetchall()
+    return rows  # [(id, nombre, unidad, cat, sku), ...]
+
+def _insumo_id_por_nombre(nombre:str):
+    with get_conn() as con:
+        r = con.execute("SELECT id FROM insumos WHERE nombre=?", (nombre,)).fetchone()
+    return r[0] if r else None
+
+def _insert_mov(fecha, tipo, insumo_id, cantidad, unidad, costo_unitario,
+                documento, origen_destino, usuario):
+    with get_conn() as con:
+        con.execute("""
+            INSERT INTO movimientos(fecha,tipo,insumo_id,cantidad,unidad,costo_unitario,documento,origen_destino,usuario)
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (str(fecha), tipo, insumo_id, float(cantidad), unidad,
+              float(costo_unitario) if costo_unitario not in (None, "") else None,
+              documento or None, origen_destino or None, usuario or None))
         con.commit()
 
 # ========== UI: MENÚ ==========
@@ -304,7 +328,7 @@ def page_stock():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cod sistema", f"{insumo_id}")
     c2.metric("Unidad base", unidad_base)
-    c3.metric("Categoría", categoria)
+    c3.metric("Categoría", categoria if categoria else "—")
     c4.metric("SKU", sku if sku else "—")
     st.metric("Existencia actual", f"{existencia:.2f} {unidad_base}")
     if precio:
@@ -313,6 +337,7 @@ def page_stock():
     st.subheader("Movimientos recientes")
     st.dataframe(df, use_container_width=True, height=420)
 
+# ==== ADMIN ====
 def page_admin_init():
     st.title("Administración · Inicializar base de datos")
     if st.button("Inicializar base"):
@@ -339,24 +364,185 @@ def page_admin_backup():
     else:
         st.warning("No hay base de datos aún.")
 
-# Mapear páginas
-PAGES = {"page_stock": page_stock,
-         "page_admin_init": page_admin_init,
-         "page_admin_seed": page_admin_seed,
-         "page_admin_backup": page_admin_backup}
+# ==== MOVIMIENTOS ====
+def page_mov_entradas():
+    st.title("Movimientos · Entradas")
+    init_db()
 
-# Placeholders para las demás vistas
-for key in [
-    "page_unidades","page_categorias","page_insumos",
-    "page_mov_entradas","page_mov_salidas","page_mov_ajustes",
-    "page_rep_kardex","page_rep_valorizado",
-    "page_meat_lotes","page_meat_rend","page_meat_rep",
-    "page_rec_aux","page_rec_aux_items",
-    "page_rec_pri","page_rec_pri_items","page_rec_pri_costeo",
-    "page_carta_items","page_carta_margenes",
-]:
-    if key not in PAGES:
-        PAGES[key] = (lambda t=key: page_placeholder(t))
+    insumos = _insumos_opciones()
+    if not insumos:
+        st.info("Primero crea/activa insumos.")
+        return
+
+    nombres = [r[1] for r in insumos]
+    with st.form("frm_ent"):
+        f1, f2, f3 = st.columns([1,2,2])
+        fecha = f1.date_input("Fecha", value=date.today())
+        nombre = f2.selectbox("Insumo", nombres)
+        unidad_base = [r[2] for r in insumos if r[1]==nombre][0]
+        cantidad = f3.number_input(f"Cantidad ({unidad_base})", min_value=0.0, step=0.1)
+
+        c1, c2, c3 = st.columns([1,1,1])
+        costo_unit = c1.number_input("Costo unitario (COP)", min_value=0.0, step=100.0)
+        documento  = c2.text_input("Documento (OC, factura, etc.)")
+        proveedor  = c3.text_input("Proveedor / origen")
+
+        usuario = st.text_input("Usuario", value="None")
+        ok = st.form_submit_button("Registrar entrada")
+
+    if ok:
+        if cantidad <= 0:
+            st.error("La cantidad debe ser mayor que 0.")
+            return
+        if costo_unit <= 0:
+            st.error("El costo unitario es requerido para las ENTRADAS.")
+            return
+
+        insumo_id = _insumo_id_por_nombre(nombre)
+        _insert_mov(fecha, "ENTRADA", insumo_id, cantidad, unidad_base, costo_unit,
+                    documento, proveedor, usuario)
+        st.success(f"Entrada: {nombre} +{cantidad} {unidad_base} a {int(costo_unit):,} COP".replace(",", "."))
+
+    st.subheader("Entradas recientes")
+    with get_conn() as con:
+        df = pd.read_sql_query("""
+            SELECT m.fecha, i.nombre, m.cantidad, m.unidad, m.costo_unitario, m.documento, m.origen_destino, m.usuario
+            FROM movimientos m JOIN insumos i ON i.id=m.insumo_id
+            WHERE m.tipo='ENTRADA' ORDER BY m.fecha DESC, m.id DESC LIMIT 30
+        """, con)
+    st.dataframe(df, use_container_width=True)
+
+def page_mov_salidas():
+    st.title("Movimientos · Salidas")
+    init_db()
+
+    insumos = _insumos_opciones()
+    if not insumos:
+        st.info("Primero crea/activa insumos.")
+        return
+
+    nombres = [r[1] for r in insumos]
+    with st.form("frm_sal"):
+        f1, f2, f3 = st.columns([1,2,2])
+        fecha = f1.date_input("Fecha", value=date.today())
+        nombre = f2.selectbox("Insumo", nombres)
+        unidad_base = [r[2] for r in insumos if r[1]==nombre][0]
+        cantidad = f3.number_input(f"Cantidad ({unidad_base})", min_value=0.0, step=0.1)
+
+        c1, c2, c3 = st.columns([1,1,1])
+        documento = c1.text_input("Documento (PRD, Vale, etc.)")
+        destino   = c2.text_input("Destino / área (Cocina, Bar...)")
+        usuario   = c3.text_input("Usuario", value="None")
+        ok = st.form_submit_button("Registrar salida")
+
+    if ok:
+        if cantidad <= 0:
+            st.error("La cantidad debe ser mayor que 0.")
+            return
+        insumo_id = _insumo_id_por_nombre(nombre)
+        _insert_mov(fecha, "SALIDA", insumo_id, cantidad, unidad_base, None,
+                    documento, destino, usuario)
+        st.success(f"Salida: {nombre} -{cantidad} {unidad_base}")
+
+    st.subheader("Salidas recientes")
+    with get_conn() as con:
+        df = pd.read_sql_query("""
+            SELECT m.fecha, i.nombre, m.cantidad, m.unidad, m.documento, m.origen_destino, m.usuario
+            FROM movimientos m JOIN insumos i ON i.id=m.insumo_id
+            WHERE m.tipo='SALIDA' ORDER BY m.fecha DESC, m.id DESC LIMIT 30
+        """, con)
+    st.dataframe(df, use_container_width=True)
+
+def page_mov_ajustes():
+    st.title("Movimientos · Ajustes")
+    init_db()
+
+    insumos = _insumos_opciones()
+    if not insumos:
+        st.info("Primero crea/activa insumos.")
+        return
+
+    nombres = [r[1] for r in insumos]
+    with st.form("frm_adj"):
+        f1, f2, f3 = st.columns([1,2,2])
+        fecha = f1.date_input("Fecha", value=date.today())
+        nombre = f2.selectbox("Insumo", nombres)
+        unidad_base = [r[2] for r in insumos if r[1]==nombre][0]
+        cantidad = f3.number_input(
+            f"Cantidad (+ repone / - descuenta) [{unidad_base}]",
+            value=0.0, step=0.1, format="%.2f"
+        )
+        c1, c2 = st.columns([2,1])
+        motivo  = c1.text_input("Motivo (conteo, merma, rotura, etc.)")
+        usuario = c2.text_input("Usuario", value="None")
+        ok = st.form_submit_button("Registrar ajuste")
+
+    if ok:
+        if cantidad == 0:
+            st.error("La cantidad no puede ser 0.")
+            return
+        insumo_id = _insumo_id_por_nombre(nombre)
+        _insert_mov(fecha, "AJUSTE", insumo_id, cantidad, unidad_base, None,
+                    motivo, "Ajuste", usuario)
+        signo = "+" if cantidad > 0 else ""
+        st.success(f"Ajuste: {nombre} {signo}{cantidad} {unidad_base}")
+
+    st.subheader("Ajustes recientes")
+    with get_conn() as con:
+        df = pd.read_sql_query("""
+            SELECT m.fecha, i.nombre, m.cantidad, m.unidad, m.documento AS motivo, m.usuario
+            FROM movimientos m JOIN insumos i ON i.id=m.insumo_id
+            WHERE m.tipo='AJUSTE' ORDER BY m.fecha DESC, m.id DESC LIMIT 30
+        """, con)
+    st.dataframe(df, use_container_width=True)
+
+# ==== PLACEHOLDERS PARA LO DEMÁS ====
+def page_unidades(): page_placeholder("Unidades")
+def page_categorias(): page_placeholder("Categorías")
+def page_insumos(): page_placeholder("Insumos")
+def page_rep_kardex(): page_placeholder("Kardex")
+def page_rep_valorizado(): page_placeholder("Valorizado")
+def page_meat_lotes(): page_placeholder("Meat Tag · Lotes de desposte")
+def page_meat_rend(): page_placeholder("Meat Tag · Rendimientos")
+def page_meat_rep(): page_placeholder("Meat Tag · Reporte por lote")
+def page_rec_aux(): page_placeholder("Receta auxiliar · Catálogo")
+def page_rec_aux_items(): page_placeholder("Receta auxiliar · Componentes")
+def page_rec_pri(): page_placeholder("Receta principal · Platos")
+def page_rec_pri_items(): page_placeholder("Receta principal · Componentes")
+def page_rec_pri_costeo(): page_placeholder("Receta principal · Costeo")
+def page_carta_items(): page_placeholder("Carta · Items facturables")
+def page_carta_margenes(): page_placeholder("Carta · Márgenes")
+
+# Mapear páginas reales
+PAGES = {
+    # Insumos
+    "page_stock": page_stock,
+    "page_mov_entradas": page_mov_entradas,
+    "page_mov_salidas": page_mov_salidas,
+    "page_mov_ajustes": page_mov_ajustes,
+    "page_unidades": page_unidades,
+    "page_categorias": page_categorias,
+    "page_insumos": page_insumos,
+    "page_rep_kardex": page_rep_kardex,
+    "page_rep_valorizado": page_rep_valorizado,
+    # Meat Tag
+    "page_meat_lotes": page_meat_lotes,
+    "page_meat_rend": page_meat_rend,
+    "page_meat_rep": page_meat_rep,
+    # Recetas
+    "page_rec_aux": page_rec_aux,
+    "page_rec_aux_items": page_rec_aux_items,
+    "page_rec_pri": page_rec_pri,
+    "page_rec_pri_items": page_rec_pri_items,
+    "page_rec_pri_costeo": page_rec_pri_costeo,
+    # Carta
+    "page_carta_items": page_carta_items,
+    "page_carta_margenes": page_carta_margenes,
+    # Administración
+    "page_admin_init": page_admin_init,
+    "page_admin_seed": page_admin_seed,
+    "page_admin_backup": page_admin_backup,
+}
 
 # ========== RENDER ==========
 page_key, _crumbs = render_menu(NAV)

@@ -384,7 +384,7 @@ def page_stock():
             LIMIT 30
         """, con, params=(insumo_id,))
 
-# ==== REPORTE: KARDEX ====
+# ==== REPORTE: KARDEX (COMPLETO, KEYS ÚNICAS y UNA SOLA TABLA) ====
 def page_rep_kardex_real():
     import pandas as pd
     from io import BytesIO
@@ -405,7 +405,6 @@ def page_rep_kardex_real():
     # Tomamos info del insumo desde la lista (sin otro query)
     row = next(r for r in ins_opts if r[1] == nombre)  # (id, nombre, unidad, cat, sku)
     insumo_id, _, unidad_base, categoria, sku = row
-    # Si eventualmente alguno es None/None-like, lo normalizamos para UI
     categoria = categoria or "—"
     sku = sku or "—"
 
@@ -418,26 +417,33 @@ def page_rep_kardex_real():
     s_from = d_from.isoformat() if d_from else None
     s_to   = d_to.isoformat() if d_to else None
 
-    # 3) DataFrame Kardex (usa el helper que ya pegaste)
+    # 3) DataFrame Kardex
     df = _kardex_df(insumo_id, s_from, s_to)
 
+    # 4) Info del insumo arriba
+    info1, info2, info3, info4 = st.columns(4)
+    info1.metric("Cod sistema", f"{insumo_id}")
+    info2.metric("Unidad base", unidad_base)
+    info3.metric("Categoría", categoria)
+    info4.metric("SKU", sku)
+
     if df.empty:
-        # Info del insumo aunque no haya movimientos
-        info1, info2, info3, info4 = st.columns(4)
-        info1.metric("Cod sistema", f"{insumo_id}")
-        info2.metric("Unidad base", unidad_base)
-        info3.metric("Categoría", categoria)
-        info4.metric("SKU", sku)
         st.warning("No hay movimientos en el rango seleccionado.")
         return
 
-    # 4) Totales del período y saldo
+    # 5) Totales del período y saldo
     tot_entradas = df.loc[df["Tipo"]=="ENTRADA","Cantidad"].sum()
     tot_salidas  = df.loc[df["Tipo"]=="SALIDA","Cantidad"].sum()
     tot_ajustes  = df.loc[df["Tipo"]=="AJUSTE","Cantidad"].sum()
     saldo_final  = df["Saldo"].iloc[-1]
 
-    # 5) Botones de descarga (CSV / Excel / PDF opcional)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Entradas", f"{tot_entradas:.2f} {unidad_base}")
+    m2.metric("Salidas", f"{tot_salidas:.2f} {unidad_base}")
+    m3.metric("Ajustes", f"{tot_ajustes:.2f} {unidad_base}")
+    m4.metric("Saldo final", f"{saldo_final:.2f} {unidad_base}")
+
+    # 6) Botones de descarga (keys únicos)
     d1, d2, d3 = st.columns(3)
 
     # CSV
@@ -446,10 +452,11 @@ def page_rep_kardex_real():
         "⬇️ CSV",
         csv_bytes,
         file_name=f"kardex_{nombre}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key=f"csv-{insumo_id}-{s_from}-{s_to}"
     )
 
-    # Excel (intenta xlsxwriter y si no está, usa openpyxl)
+    # Excel (intenta xlsxwriter y si no, openpyxl)
     def df_to_excel_bytes(_df: pd.DataFrame) -> bytes:
         bio = BytesIO()
         try:
@@ -466,7 +473,8 @@ def page_rep_kardex_real():
         "⬇️ Excel",
         excel_bytes,
         file_name=f"kardex_{nombre}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"xlsx-{insumo_id}-{s_from}-{s_to}"
     )
 
     # PDF (opcional) — requiere 'reportlab' en requirements.txt
@@ -504,112 +512,17 @@ def page_rep_kardex_real():
             "⬇️ PDF",
             pdf_bytes,
             file_name=f"kardex_{nombre}.pdf",
-            mime="application/pdf"
+            mime="application/pdf",
+            key=f"pdf-{insumo_id}-{s_from}-{s_to}"
         )
     except Exception:
         d3.caption("Para PDF instala 'reportlab' en requirements.txt")
 
     st.divider()
 
-    # 6) Info del insumo
-    info1, info2, info3, info4 = st.columns(4)
-    info1.metric("Cod sistema", f"{insumo_id}")
-    info2.metric("Unidad base", unidad_base)
-    info3.metric("Categoría", categoria)
-    info4.metric("SKU", sku)
-
-    # 7) Totales del período
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Entradas", f"{tot_entradas:.2f} {unidad_base}")
-    m2.metric("Salidas", f"{tot_salidas:.2f} {unidad_base}")
-    m3.metric("Ajustes", f"{tot_ajustes:.2f} {unidad_base}")
-    m4.metric("Saldo final", f"{saldo_final:.2f} {unidad_base}")
-
-    # 8) Tabla
+    # 7) Tabla — ÚNICA
     st.subheader("Movimientos")
     st.dataframe(df, use_container_width=True, height=520)
-
-  # Totales del período (por tipo)
-    tot_entradas = df.loc[df["Tipo"]=="ENTRADA","Cantidad"].sum()
-    tot_salidas  = df.loc[df["Tipo"]=="SALIDA","Cantidad"].sum()
-    tot_ajustes  = df.loc[df["Tipo"]=="AJUSTE","Cantidad"].sum()
-    saldo_final  = df["Saldo"].iloc[-1]
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Entradas", f"{tot_entradas:.2f} {unidad_base}")
-    m2.metric("Salidas", f"{tot_salidas:.2f} {unidad_base}")
-    m3.metric("Ajustes", f"{tot_ajustes:.2f} {unidad_base}")
-    m4.metric("Saldo final", f"{saldo_final:.2f} {unidad_base}")
-
-    st.subheader("Movimientos")
-    st.dataframe(df, use_container_width=True, height=500)
-
-        # Descargas
-    cdl1, cdl2, cdl3 = st.columns(3)
-
-    # CSV
-    csv = df.to_csv(index=False).encode("utf-8")
-    cdl1.download_button("⬇️ CSV", csv, file_name=f"kardex_{nombre}.csv", mime="text/csv")
-
-    # Excel (usa xlsxwriter si está; si no, openpyxl)
-    from io import BytesIO
-    def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
-        bio = BytesIO()
-        try:
-            with pd.ExcelWriter(bio, engine="xlsxwriter") as xlw:
-                df.to_excel(xlw, index=False, sheet_name="Kardex")
-        except Exception:
-            bio = BytesIO()
-            with pd.ExcelWriter(bio, engine="openpyxl") as xlw:
-                df.to_excel(xlw, index=False, sheet_name="Kardex")
-        return bio.getvalue()
-
-    excel_bytes = df_to_excel_bytes(df)
-    cdl2.download_button(
-        "⬇️ Excel",
-        excel_bytes,
-        file_name=f"kardex_{nombre}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    # PDF (opcional, requiere reportlab en requirements.txt)
-    try:
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-        from reportlab.lib.styles import getSampleStyleSheet
-
-        def df_to_pdf_bytes(df: pd.DataFrame, title="Kardex"):
-            bio = BytesIO()
-            doc = SimpleDocTemplate(bio, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
-            elems = []
-            styles = getSampleStyleSheet()
-            elems.append(Paragraph(title, styles["Heading2"]))
-            data = [list(df.columns)] + df.values.tolist()
-            t = Table(data, repeatRows=1)
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#222")),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
-                ("ALIGN", (0,0), (-1,-1), "CENTER"),
-                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-                ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-            ]))
-            elems.append(t)
-            doc.build(elems)
-            return bio.getvalue()
-
-        pdf_bytes = df_to_pdf_bytes(df, title=f"Kardex – {nombre}")
-        cdl3.download_button(
-            "⬇️ PDF",
-            pdf_bytes,
-            file_name=f"kardex_{nombre}.pdf",
-            mime="application/pdf"
-        )
-    except Exception:
-        # Si reportlab no está instalado, mostramos tip
-        cdl3.caption("Para PDF instala 'reportlab' en requirements.txt")
-
     # UI
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cod sistema", f"{insumo_id}")

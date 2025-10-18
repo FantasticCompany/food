@@ -429,18 +429,72 @@ def page_rep_kardex_real():
     st.subheader("Movimientos")
     st.dataframe(df, use_container_width=True, height=500)
 
-    # Descargas
-    cdl1, cdl2 = st.columns(2)
+        # Descargas
+    cdl1, cdl2, cdl3 = st.columns(3)
+
+    # CSV
     csv = df.to_csv(index=False).encode("utf-8")
-    cdl1.download_button("⬇️ Descargar CSV", csv, file_name=f"kardex_{nombre}.csv", mime="text/csv")
+    cdl1.download_button("⬇️ CSV", csv, file_name=f"kardex_{nombre}.csv", mime="text/csv")
 
+    # Excel (usa xlsxwriter si está; si no, openpyxl)
     from io import BytesIO
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as xlw:
-        df.to_excel(xlw, index=False, sheet_name="Kardex")
-    cdl2.download_button("⬇️ Descargar Excel", bio.getvalue(), file_name=f"kardex_{nombre}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
+        bio = BytesIO()
+        try:
+            with pd.ExcelWriter(bio, engine="xlsxwriter") as xlw:
+                df.to_excel(xlw, index=False, sheet_name="Kardex")
+        except Exception:
+            bio = BytesIO()
+            with pd.ExcelWriter(bio, engine="openpyxl") as xlw:
+                df.to_excel(xlw, index=False, sheet_name="Kardex")
+        return bio.getvalue()
 
-  
+    excel_bytes = df_to_excel_bytes(df)
+    cdl2.download_button(
+        "⬇️ Excel",
+        excel_bytes,
+        file_name=f"kardex_{nombre}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # PDF (opcional, requiere reportlab en requirements.txt)
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        def df_to_pdf_bytes(df: pd.DataFrame, title="Kardex"):
+            bio = BytesIO()
+            doc = SimpleDocTemplate(bio, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
+            elems = []
+            styles = getSampleStyleSheet()
+            elems.append(Paragraph(title, styles["Heading2"]))
+            data = [list(df.columns)] + df.values.tolist()
+            t = Table(data, repeatRows=1)
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#222")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
+            ]))
+            elems.append(t)
+            doc.build(elems)
+            return bio.getvalue()
+
+        pdf_bytes = df_to_pdf_bytes(df, title=f"Kardex – {nombre}")
+        cdl3.download_button(
+            "⬇️ PDF",
+            pdf_bytes,
+            file_name=f"kardex_{nombre}.pdf",
+            mime="application/pdf"
+        )
+    except Exception:
+        # Si reportlab no está instalado, mostramos tip
+        cdl3.caption("Para PDF instala 'reportlab' en requirements.txt")
+
     # UI
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cod sistema", f"{insumo_id}")

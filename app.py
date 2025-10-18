@@ -617,7 +617,7 @@ def page_mov_ajustes():
 def page_unidades(): page_placeholder("Unidades")
 def page_categorias(): page_placeholder("Categorías")
 def page_insumos(): page_placeholder("Insumos")
-def page_rep_kardex(): page_placeholder("Kardex")
+# def page_rep_kardex(): page_placeholder("Kardex")
 def page_rep_valorizado(): page_placeholder("Valorizado")
 def page_meat_lotes(): page_placeholder("Meat Tag · Lotes de desposte")
 def page_meat_rend(): page_placeholder("Meat Tag · Rendimientos")
